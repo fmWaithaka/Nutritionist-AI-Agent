@@ -1,0 +1,8 @@
+# requirements.txt
+streamlit
+pillow
+pandas
+matplotlib
+python-dotenv
+requests
+google-genai==1.7.0
