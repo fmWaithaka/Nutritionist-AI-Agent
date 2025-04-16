@@ -107,3 +107,4 @@ def load_nutrition_data(filepath="data/nutrition.csv"):
     except Exception as e:
         log.error(f"Failed to load or process nutrition data from {filepath}: {e}", exc_info=True)
         return None
+

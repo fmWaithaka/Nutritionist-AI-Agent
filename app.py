@@ -30,22 +30,6 @@ if not GOOGLE_API_KEY:
     st.stop()
 else:
     log.info("Google API Key loaded successfully.")
-    # You might add a quick validation call here if desired,
-    # but gemini_api functions handle errors if key is invalid
-
-
-# --- 3. Load Static Data ---
-# nutrition_df = None # Initialize
-# try:
-#     nutrition_df = utils.load_nutrition_data("data/nutrition.csv") # Call function from utils
-#     if nutrition_df is None:
-#         st.error("❌ Failed to load nutrition data. Please check file path and format.")
-#         st.stop()
-# except Exception as e:
-#     log.error(f"Error during nutrition data loading in app.py: {e}", exc_info=True)
-#     st.error(f"An unexpected error occurred loading nutrition data: {e}")
-#     st.stop()
-# # --- 4. Main Application UI ---
 
 st.title("🧠 AccessGen: AI Meal Planner ")
 
@@ -194,120 +178,172 @@ if submitted:
 # --- End of 'if submitted:' block ---
 
 
-# --- Results Display Block (AFTER `if submitted:`) ---
 # This block runs on every script rerun IF meal plan data exists in session state
 if 'meal_plan_data' in st.session_state and st.session_state['meal_plan_data']:
     log.info("Found meal plan data in session state. Preparing display.")
-    # Retrieve the data stored earlier
-    meal_plan_dict = st.session_state['meal_plan_data']
+    # Retrieve the data stored earlier - it could be a list or a dict
+    meal_plan_data = st.session_state['meal_plan_data']
 
-    st.header("✅ Your Generated Meal Plan & Grocery List") # Combined header
+    st.header("✅ Your Generated Meal Plan & Grocery List")
 
-    # --- Display the Meal Plan in an Expander ---
     with st.expander("📅 View 7-Day Meal Plan Details", expanded=True):
-        try:
-            # Attempt to sort days numerically (handles "day1", "day10", etc.)
-            sorted_days = sorted(
-                meal_plan_dict.items(),
-                key=lambda item: int(re.search(r'\d+', item[0]).group()) if re.search(r'\d+', item[0]) else 0
-            )
-        except Exception as sort_e:
-            log.warning(f"Could not sort meal plan keys numerically ({sort_e}), using dictionary order.")
-            sorted_days = meal_plan_dict.items() # Fallback to default order
 
-        if not sorted_days:
-             st.warning("Meal plan data seems empty after sorting.")
+        # --- Check the format (dict or list) and process accordingly ---
+        if isinstance(meal_plan_data, dict):
+            # --- Logic for DICTIONARY format ---
+            log.info("Displaying meal plan from DICTIONARY format.")
+            if not meal_plan_data:
+                st.warning("Meal plan dictionary is empty.")
+            else:
+                try:
+                    # Sort dictionary by day number key (e.g., "day1", "day10")
+                    sorted_items = sorted(
+                        meal_plan_data.items(),
+                        key=lambda item: int(re.search(r'\d+', item[0]).group()) if re.search(r'\d+', item[0]) else 0
+                    )
+                except Exception as sort_e:
+                    log.warning(f"Could not sort dict keys numerically ({sort_e}), using default order.")
+                    sorted_items = meal_plan_data.items() # Fallback to default order
+
+                # Loop through the sorted dictionary items
+                for day_key, day_content in sorted_items:
+                    if not isinstance(day_content, dict):
+                         log.warning(f"Skipping invalid day data for key {day_key}: {type(day_content)}")
+                         continue
+
+                    # Derive label from the dictionary key
+                    day_num_match = re.search(r'\d+', day_key)
+                    day_label = f"Day {day_num_match.group()}" if day_num_match else day_key.capitalize()
+
+                    # --- COMMON Day Processing Logic ---
+                    st.markdown(f"--- \n#### 🗓️ **{day_label}**")
+                    meal_rows = []
+                    # Inner loop to process meals for the table
+                    for meal_type in ["breakfast", "lunch", "dinner", "snacks"]:
+                        info = day_content.get(meal_type)
+                        # --- Handle complex snacks dictionary structure ---
+                        if meal_type == "snacks" and isinstance(info, dict):
+                            snack_items_text = []; combined_nutrition = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}; suffix = ""; i_snack = 1; processed_snack = False # Renamed inner loop counter
+                            while True:
+                                dish_key = f"dish_name{suffix}"; portion_key = f"portion_size{suffix}"; nutrition_key = f"nutrition{suffix}"
+                                if dish_key in info:
+                                    processed_snack = True; dish_name = info.get(dish_key, "Snack"); portion_size = utils.estimate_grams(info.get(portion_key, 'N/A')); snack_items_text.append(f"{dish_name} ({portion_size})")
+                                    nutr = info.get(nutrition_key, {})
+                                    if isinstance(nutr, dict): combined_nutrition["calories"] += utils.extract_num(nutr.get("calories", 0)); combined_nutrition["protein"] += utils.extract_num(nutr.get("protein", 0)); combined_nutrition["carbs"] += utils.extract_num(nutr.get("carbs", 0)); combined_nutrition["fat"] += utils.extract_num(nutr.get("fat", 0))
+                                    i_snack += 1; suffix = str(i_snack)
+                                elif suffix == "" and "dish_name" in info: break
+                                elif suffix != "": break
+                                else: break
+                            if processed_snack: meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": ", ".join(snack_items_text), "Portion": "Multiple Items", "Calories (kcal)": utils.format_number(combined_nutrition["calories"]), "Protein (g)": utils.format_number(combined_nutrition["protein"]), "Carbs (g)": utils.format_number(combined_nutrition["carbs"]), "Fat (g)": utils.format_number(combined_nutrition["fat"]), })
+                            elif "dish_name" in info: nutrition = info.get("nutrition", {}); meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": info.get("dish_name", "N/A"), "Portion": utils.estimate_grams(info.get("portion_size", "N/A")), "Calories (kcal)": utils.format_number(nutrition.get("calories", 0)), "Protein (g)": utils.format_number(nutrition.get("protein", 0)), "Carbs (g)": utils.format_number(nutrition.get("carbs", 0)), "Fat (g)": utils.format_number(nutrition.get("fat", 0)), })
+                        # --- Handle standard meal dictionary ---
+                        elif isinstance(info, dict):
+                            nutrition = info.get("nutrition", {})
+                            meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": info.get("dish_name", "N/A"), "Portion": utils.estimate_grams(info.get("portion_size", "N/A")), "Calories (kcal)": utils.format_number(nutrition.get("calories", 0)), "Protein (g)": utils.format_number(nutrition.get("protein", 0)), "Carbs (g)": utils.format_number(nutrition.get("carbs", 0)), "Fat (g)": utils.format_number(nutrition.get("fat", 0)), })
+                        # --- Handle snacks as list (less common fallback) ---
+                        elif isinstance(info, list) and meal_type == "snacks":
+                            log.warning(f"Snacks for {day_label} is a list - using basic processing.")
+                            combined_dish = ", ".join([s.get("dish_name", "Snack") for s in info if isinstance(s, dict)])
+                            if combined_dish: meal_rows.append({"Meal": "Snacks", "Dish": combined_dish, "Portion": "List Items", "Calories (kcal)": "N/A", "Protein (g)": "N/A", "Carbs (g)": "N/A", "Fat (g)": "N/A"})
+                    # Display table
+                    if meal_rows: df = pd.DataFrame(meal_rows); st.dataframe(df, hide_index=True, use_container_width=True)
+                    else: st.warning(f"No meal data processed for {day_label}.")
+                    # Display totals
+                    total = day_content.get("daily_nutrition", {})
+                    if total and isinstance(total, dict):
+                        st.markdown("**Daily Totals (Estimated):**")
+                        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+                        with col_t1: st.metric("Calories", f"{utils.format_number(total.get('calories', 0))} kcal")
+                        with col_t2: st.metric("Protein", f"{utils.format_number(total.get('protein', 0))} g")
+                        with col_t3: st.metric("Carbs", f"{utils.format_number(total.get('carbs', 0))} g")
+                        with col_t4: st.metric("Fat", f"{utils.format_number(total.get('fat', 0))} g")                   
+
+        elif isinstance(meal_plan_data, list):
+            # --- Logic for LIST format ---
+            log.info("Displaying meal plan from LIST format.")
+            if not meal_plan_data: # Check if list is empty
+                 st.warning("Meal plan list is empty.")
+            else:
+                # Loop through list items
+                for i, day_content in enumerate(meal_plan_data):
+                    if not isinstance(day_content, dict):
+                         log.warning(f"Skipping invalid day data at index {i}: {type(day_content)}")
+                         continue # Skip bad data
+
+                    # Get day label from inside the day's dict, fallback to index
+                    day_name = day_content.get("day", f"Day {i + 1}")
+                    day_label = day_name.capitalize()
+
+                    # --- COMMON Day Processing Logic ---
+                    st.markdown(f"--- \n#### 🗓️ **{day_label}**")
+                    meal_rows = []
+                    # Inner loop to process meals for the table
+                    for meal_type in ["breakfast", "lunch", "dinner", "snacks"]:
+                        info = day_content.get(meal_type)
+                        # --- Handle complex snacks dictionary structure ---
+                        if meal_type == "snacks" and isinstance(info, dict):
+                            snack_items_text = []; combined_nutrition = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}; suffix = ""; i_snack = 1; processed_snack = False # Renamed inner loop counter
+                            while True:
+                                dish_key = f"dish_name{suffix}"; portion_key = f"portion_size{suffix}"; nutrition_key = f"nutrition{suffix}"
+                                if dish_key in info:
+                                    processed_snack = True; dish_name = info.get(dish_key, "Snack"); portion_size = utils.estimate_grams(info.get(portion_key, 'N/A')); snack_items_text.append(f"{dish_name} ({portion_size})")
+                                    nutr = info.get(nutrition_key, {})
+                                    if isinstance(nutr, dict): combined_nutrition["calories"] += utils.extract_num(nutr.get("calories", 0)); combined_nutrition["protein"] += utils.extract_num(nutr.get("protein", 0)); combined_nutrition["carbs"] += utils.extract_num(nutr.get("carbs", 0)); combined_nutrition["fat"] += utils.extract_num(nutr.get("fat", 0))
+                                    i_snack += 1; suffix = str(i_snack)
+                                elif suffix == "" and "dish_name" in info: break
+                                elif suffix != "": break
+                                else: break
+                            if processed_snack: meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": ", ".join(snack_items_text), "Portion": "Multiple Items", "Calories (kcal)": utils.format_number(combined_nutrition["calories"]), "Protein (g)": utils.format_number(combined_nutrition["protein"]), "Carbs (g)": utils.format_number(combined_nutrition["carbs"]), "Fat (g)": utils.format_number(combined_nutrition["fat"]), })
+                            elif "dish_name" in info: nutrition = info.get("nutrition", {}); meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": info.get("dish_name", "N/A"), "Portion": utils.estimate_grams(info.get("portion_size", "N/A")), "Calories (kcal)": utils.format_number(nutrition.get("calories", 0)), "Protein (g)": utils.format_number(nutrition.get("protein", 0)), "Carbs (g)": utils.format_number(nutrition.get("carbs", 0)), "Fat (g)": utils.format_number(nutrition.get("fat", 0)), })
+                        # --- Handle standard meal dictionary ---
+                        elif isinstance(info, dict):
+                            nutrition = info.get("nutrition", {})
+                            meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": info.get("dish_name", "N/A"), "Portion": utils.estimate_grams(info.get("portion_size", "N/A")), "Calories (kcal)": utils.format_number(nutrition.get("calories", 0)), "Protein (g)": utils.format_number(nutrition.get("protein", 0)), "Carbs (g)": utils.format_number(nutrition.get("carbs", 0)), "Fat (g)": utils.format_number(nutrition.get("fat", 0)), })
+                        # --- Handle snacks as list (less common fallback) ---
+                        elif isinstance(info, list) and meal_type == "snacks":
+                            log.warning(f"Snacks for {day_label} is a list - using basic processing.")
+                            combined_dish = ", ".join([s.get("dish_name", "Snack") for s in info if isinstance(s, dict)])
+                            if combined_dish: meal_rows.append({"Meal": "Snacks", "Dish": combined_dish, "Portion": "List Items", "Calories (kcal)": "N/A", "Protein (g)": "N/A", "Carbs (g)": "N/A", "Fat (g)": "N/A"})
+                    # Display table
+                    if meal_rows: df = pd.DataFrame(meal_rows); st.dataframe(df, hide_index=True, use_container_width=True)
+                    else: st.warning(f"No meal data processed for {day_label}.")
+                    # Display totals
+                    total = day_content.get("daily_nutrition", {})
+                    if total and isinstance(total, dict):
+                        st.markdown("**Daily Totals (Estimated):**")
+                        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+                        with col_t1: st.metric("Calories", f"{utils.format_number(total.get('calories', 0))} kcal")
+                        with col_t2: st.metric("Protein", f"{utils.format_number(total.get('protein', 0))} g")
+                        with col_t3: st.metric("Carbs", f"{utils.format_number(total.get('carbs', 0))} g")
+                        with col_t4: st.metric("Fat", f"{utils.format_number(total.get('fat', 0))} g")
+                    # --- END COMMON Day Processing Logic ---
+
         else:
-            for day_key, day_content in sorted_days:
-                if not isinstance(day_content, dict):
-                     log.warning(f"Skipping invalid day data for key {day_key}: {type(day_content)}")
-                     continue # Skip if day data isn't a dictionary
+            # --- Handle unexpected format ---
+            st.error("Meal plan data in session state is not a recognized format (dictionary or list).")
+            log.error(f"Unrecognized meal plan data type in session state: {type(meal_plan_data)}")
+        # --- *** END TYPE CHECK AND CONDITIONAL LOGIC *** ---
 
-                day_num_match = re.search(r'\d+', day_key)
-                day_label = f"Day {day_num_match.group()}" if day_num_match else day_key.capitalize()
-
-                st.markdown(f"--- \n#### 🗓️ **{day_label}**") # Use H4 inside expander
-                meal_rows = []
-                # Inner loop to process meals for the table
-                for meal_type in ["breakfast", "lunch", "dinner", "snacks"]:
-                    info = day_content.get(meal_type)
-
-                    # --- Handle complex snacks dictionary structure ---
-                    if meal_type == "snacks" and isinstance(info, dict):
-                        snack_items_text = []; combined_nutrition = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}; suffix = ""; i = 1; processed_snack = False
-                        while True:
-                            dish_key = f"dish_name{suffix}"; portion_key = f"portion_size{suffix}"; nutrition_key = f"nutrition{suffix}"
-                            if dish_key in info:
-                                processed_snack = True; dish_name = info.get(dish_key, "Snack"); portion_size = utils.estimate_grams(info.get(portion_key, 'N/A')); snack_items_text.append(f"{dish_name} ({portion_size})")
-                                nutr = info.get(nutrition_key, {})
-                                if isinstance(nutr, dict): combined_nutrition["calories"] += utils.extract_num(nutr.get("calories", 0)); combined_nutrition["protein"] += utils.extract_num(nutr.get("protein", 0)); combined_nutrition["carbs"] += utils.extract_num(nutr.get("carbs", 0)); combined_nutrition["fat"] += utils.extract_num(nutr.get("fat", 0))
-                                i += 1; suffix = str(i)
-                            elif suffix == "" and "dish_name" in info: break # Handled first/only one
-                            elif suffix != "": break # No more numbered ones
-                            else: break # No dish_name found
-                        if processed_snack: meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": ", ".join(snack_items_text), "Portion": "Multiple Items", "Calories (kcal)": utils.format_number(combined_nutrition["calories"]), "Protein (g)": utils.format_number(combined_nutrition["protein"]), "Carbs (g)": utils.format_number(combined_nutrition["carbs"]), "Fat (g)": utils.format_number(combined_nutrition["fat"]), })
-                        elif "dish_name" in info: nutrition = info.get("nutrition", {}); meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": info.get("dish_name", "N/A"), "Portion": utils.estimate_grams(info.get("portion_size", "N/A")), "Calories (kcal)": utils.format_number(nutrition.get("calories", 0)), "Protein (g)": utils.format_number(nutrition.get("protein", 0)), "Carbs (g)": utils.format_number(nutrition.get("carbs", 0)), "Fat (g)": utils.format_number(nutrition.get("fat", 0)), })
-                    # --- Handle standard meal dictionary ---
-                    elif isinstance(info, dict):
-                        nutrition = info.get("nutrition", {})
-                        meal_rows.append({ "Meal": meal_type.capitalize(), "Dish": info.get("dish_name", "N/A"), "Portion": utils.estimate_grams(info.get("portion_size", "N/A")), "Calories (kcal)": utils.format_number(nutrition.get("calories", 0)), "Protein (g)": utils.format_number(nutrition.get("protein", 0)), "Carbs (g)": utils.format_number(nutrition.get("carbs", 0)), "Fat (g)": utils.format_number(nutrition.get("fat", 0)), })
-                    # --- Handle snacks as list (less common fallback) ---
-                    elif isinstance(info, list) and meal_type == "snacks":
-                        log.warning(f"Snacks for {day_label} is a list - using basic processing.")
-                        combined_dish = ", ".join([s.get("dish_name", "Snack") for s in info if isinstance(s, dict)])
-                        if combined_dish: meal_rows.append({"Meal": "Snacks", "Dish": combined_dish, "Portion": "List Items", "Calories (kcal)": "N/A", "Protein (g)": "N/A", "Carbs (g)": "N/A", "Fat (g)": "N/A"})
-
-                # Display the table for the day
-                if meal_rows:
-                    df = pd.DataFrame(meal_rows)
-                    st.dataframe(df, hide_index=True, use_container_width=True)
-                else:
-                    st.warning(f"No meal data processed for {day_label}.")
-
-                # Display daily totals
-                total = day_content.get("daily_nutrition", {})
-                if total and isinstance(total, dict):
-                    st.markdown("**Daily Totals (Estimated):**")
-                    col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-                    with col_t1: st.metric("Calories", f"{utils.format_number(total.get('calories', 0))} kcal")
-                    with col_t2: st.metric("Protein", f"{utils.format_number(total.get('protein', 0))} g")
-                    with col_t3: st.metric("Carbs", f"{utils.format_number(total.get('carbs', 0))} g")
-                    with col_t4: st.metric("Fat", f"{utils.format_number(total.get('fat', 0))} g")
-
-        # --- End of meal plan display loop ---
-
-    # --- Display the Grocery List Button (Safely outside form logic) ---
-    st.markdown("---") # Separator
+    # --- Display the Grocery List Button ---
+    st.markdown("---")
     if st.button("🛒 Generate Weekly Grocery List"):
-        log.info("Generate Grocery List button clicked.")
-        with st.spinner("Analyzing meal plan to create grocery list..."):
-            # Call the API function from gemini_api module, passing the key and plan dict
-            grocery_list_md = gemini_api.generate_grocery_list_with_rest(
-                GOOGLE_API_KEY, meal_plan_dict, language=lang_name
-            )
+        current_meal_plan_data = st.session_state.get('meal_plan_data') # This is now list OR dict
+        if current_meal_plan_data:
+             with st.spinner("Analyzing meal plan to create grocery list..."):
+                 grocery_list_md = gemini_api.generate_grocery_list_with_rest(
+                     GOOGLE_API_KEY, current_meal_plan_data, language=lang_name
+                 )
 
-        if grocery_list_md:
-            log.info("Grocery list generated successfully.")
-            st.subheader("🛒 Weekly Grocery List (AI Generated)")
-            st.markdown(grocery_list_md) # Render the Markdown list
-            st.caption("Note: This is an AI-generated estimate. Quantities may need adjustment. Please double-check against actual recipes if available.")
+             if grocery_list_md:
+                 log.info("Grocery list generated successfully.")
+                 st.subheader("🛒 Weekly Grocery List (AI Generated)")
+                 st.markdown(grocery_list_md)
+                 st.caption("Note: This is an AI-generated estimate. Quantities may need adjustment.")
+             else:
+                 # Error message should have been shown by the gemini_api function
+                 log.warning("Grocery list generation function did not return valid data.")
         else:
-            # Error message should have been shown by the gemini_api function
-            log.warning("Grocery list generation function did not return valid data.")
-            # No extra st.error needed here
-    # --- End of Grocery List Section ---
+             st.error("Cannot generate grocery list because meal plan data is missing.")
 
-# --- End of Results Display Block ---
-
-
-# --- Nutrition Database Display ---
-# st.header("📊 Nutrition Database Lookup (Reference)")
-# with st.expander("View Sample Nutrition Data"):
-#     if nutrition_df is not None:
-#         st.dataframe(nutrition_df.head(10), use_container_width=True) # Show sample
-#     else:
-#         st.warning("Nutrition data failed to load.")
-
-# --- Footer or other info ---
 st.markdown("---")
 st.caption("AI Meal Planner MVP | Powered by Google Gemini")
