@@ -60,10 +60,6 @@ pip install -r requirements.txt
 # Create .env file
 echo "google_api_key=your_api_key_here" > .env
 echo "usda_api_key=your_api_key_here" > .env
-
-# Create data directory
-mkdir -p data
-# Place nutrition.csv in data folder
 ```
 
 ### Usage
