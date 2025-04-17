@@ -1,23 +1,128 @@
-# gemini_api.py
-
 import requests
 import base64
 import json
-import os
 import re
 import logging
 import pandas as pd
 import streamlit as st  # Required because st.error/warning are used directly here
 
+from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
+
+from constants import GOOGLE_API_KEY, USDA_API_KEY, USDA_BASE_URL, EXAMPLE_MEAL_STRUCTURE
+
 # Configure logger for this module
 log = logging.getLogger(__name__)
 
-GOOGLE_API_KEY = os.getenv("google_api_key")
 
 if not GOOGLE_API_KEY:
     st.error("❌ Google API key ('google_api_key') not found in .env file")
     st.stop()
 
+if not USDA_API_KEY:
+    st.warning("⚠️ USDA API key ('usda_api_key') not found in .env file. Enhanced grounding will be limited.")
+
+
+def validate_meal_plan_nutrition(meal_plan: dict) -> dict:
+    """Cross-check generated nutrition data with USDA database"""
+    validation_results = {
+        "total_dishes": 0,
+        "usda_verified": 0,
+        "calorie_discrepancies": [],
+        "macro_discrepancies": []
+    }
+    
+    for day, meals in meal_plan.get("meal_plan", {}).items():
+        for meal_type in ["breakfast", "lunch", "dinner", "snacks"]:
+            meal = meals.get(meal_type, {})
+            if not meal.get("dish_name"):
+                continue
+            
+            validation_results["total_dishes"] += 1
+            
+            # Get USDA data
+            usda_data = fetch_nutrition_data_from_usda(meal["dish_name"])
+            if not usda_data:
+                continue
+                
+            validation_results["usda_verified"] += 1
+            
+            # Compare values
+            generated = meal.get("nutrition", {})
+            discrepancies = {}
+            
+            for key in ["calories", "protein", "carbs", "fat"]:
+                gen_val = generated.get(key, 0)
+                usda_val = usda_data.get(key, 0)
+                
+                if usda_val > 0 and abs(gen_val - usda_val)/usda_val > 0.15:  # 15% threshold
+                    discrepancies[key] = {
+                        "generated": gen_val,
+                        "usda": usda_val,
+                        "variance": round((gen_val - usda_val)/usda_val * 100, 1)
+                    }
+            
+            if discrepancies:
+                validation_results["calorie_discrepancies"].append({
+                    "dish": meal["dish_name"],
+                    **discrepancies
+                })
+    
+    return validation_results
+
+
+def fetch_nutrition_data_from_usda(food_name: str) -> dict:
+    """
+    Fetches nutrition data for a given food name from the USDA FoodData Central API.
+    Returns a dictionary with relevant nutrition information or None if not found or error.
+    """
+    try:
+        params = {
+            "api_key": USDA_API_KEY,
+            "query": food_name,
+            "pageSize": 3,  # Get top 3 for better matching
+            "dataType": ["Survey (FNDDS)"]  # Focus on standard reference data
+        }
+        
+        response = requests.get(USDA_BASE_URL, params=params, timeout=15)
+        response.raise_for_status()
+        
+        best_match = None
+        best_score = 0
+        
+        for food in response.json().get("foods", []):
+            # Use fuzzy matching to find best name match
+            score = fuzz.ratio(food_name.lower(), food["description"].lower())
+            if score > best_score:
+                best_match = food
+                best_score = score
+                
+        if best_score < 65:  # Only use good matches
+            return None
+            
+        # Extract nutrients with validation
+        nutrients = {
+            "calories": get_nutrient_value(best_match, "Energy"),
+            "protein": get_nutrient_value(best_match, "Protein"),
+            "carbs": get_nutrient_value(best_match, "Carbohydrate, by difference"),
+            "fat": get_nutrient_value(best_match, "Total lipid (fat)")
+        }
+        
+        # Validate required fields
+        if all(v > 0 for v in nutrients.values()):
+            return nutrients
+            
+    except Exception as e:
+        log.error(f"USDA fetch error: {str(e)}")
+        return None
+
+def get_nutrient_value(food_data: dict, nutrient_name: str) -> float:
+    """Safe nutrient value extraction"""
+    return next(
+        (n["value"] for n in food_data.get("foodNutrients", []) 
+         if n.get("nutrientName") == nutrient_name and n.get("unitName") == "kcal"),
+        0.0
+    )
 
 def analyze_image_with_rest(api_key: str, image_bytes: bytes, language: str = "English"):
     """
@@ -108,13 +213,13 @@ def analyze_image_with_rest(api_key: str, image_bytes: bytes, language: str = "E
                     },
                     "raw_response_text": text_result
                 }
-            try:
-                with open("api_log.jsonl", "a", encoding="utf-8") as f:
-                    json.dump(log_entry, f)
-                    f.write("\n")
-                log.info("Logged image analysis request/response")
-            except Exception as log_e:
-                log.error(f"Failed to log image analysis: {log_e}")
+                try:
+                    with open("api_log.jsonl", "a", encoding="utf-8") as f:
+                        json.dump(log_entry, f)
+                        f.write("\n")
+                    log.info("Logged image analysis request/response")
+                except Exception as log_e:
+                    log.error(f"Failed to log image analysis: {log_e}")
 
         except (KeyError, IndexError, TypeError) as e:
             log.error(
@@ -143,6 +248,24 @@ def analyze_image_with_rest(api_key: str, image_bytes: bytes, language: str = "E
             log.info(f"Vision API Found JSON block: {json_str}")
             analysis_data = json.loads(json_str)
             log.info("Vision analysis JSON decoded successfully.")
+
+            # --- Fetch and add nutrition data from USDA ---
+            food_name = analysis_data.get("food")
+            if food_name:
+                usda_nutrition = fetch_nutrition_data_from_usda(food_name)
+                if usda_nutrition:
+                    # Calculate portion-adjusted values
+                    portion_grams = analysis_data.get("portion_grams", 100)
+                    analysis_data["verified_nutrition"] = {
+                        "calories": (usda_nutrition["calories"] / 100) * portion_grams,
+                        "protein": (usda_nutrition["protein"] / 100) * portion_grams,
+                        "carbs": (usda_nutrition["carbs"] / 100) * portion_grams,
+                        "fat": (usda_nutrition["fat"] / 100) * portion_grams
+                    }
+                    analysis_data["data_source"] = "USDA"
+                else:
+                    analysis_data["data_source"] = "AI Estimate"
+
             return analysis_data
         except json.JSONDecodeError as e:
             log.error(f"Vision Error: Failed to decode JSON: {e}")
@@ -199,23 +322,25 @@ def generate_meal_plan_with_rest(api_key: str, calorie_target: int, preferences:
             f"- Diet/Restrictions: {restrictions_str}\n"
             f"- Favorite Foods: {favorites_str}\n"
             f"- Disliked Foods: {dislikes_str}\n\n"
-            f"Each day MUST include:\n"
-            f"- Four meals (breakfast, lunch, dinner, snacks)\n"
-            f"- Each meal MUST include keys: 'dish_name' (string), 'portion_size' (string, e.g., '1 bowl', '300g'), "
-            f"'nutrition' (object with keys: 'calories', 'protein', 'carbs', 'fat' as numbers or strings like '100 kcal')\n"
-            f"- A 'daily_nutrition' summary object for each day (with numerical totals for calories, protein, carbs, fat)\n\n"
-            # Critical instruction
-            f"Respond ONLY with a valid JSON object (no introductory text, no explanations, no markdown formatting) under the top-level key: 'meal_plan'."
-            f"Ensure the language used for dish names is primarily {language}."
+            f"Critical Requirements:\n"
+            f"1. Use COMMON, WELL-KNOWN FOOD ITEMS from standard nutritional databases\n"
+            f"2. For each meal's nutrition data:\n"
+            f"   a) First check USDA FoodData Central database values using its API\n"
+            f"   b) Clearly note if values are estimates with 'estimated_' prefix\n"
+            f"3. Format nutrition values as NUMBERS ONLY (no units)\n"
+            f"4. Ensure portion sizes use STANDARD METRIC measurements (grams)\n"
+            f"5. Include a 'data_source': 'USDA' field for each meal to indicate the source of nutrition data.\n"
+            f"**6. For each day, include 1-2 realistic snack options. A typical snack should be between 100-300 kcal.**\n" # Added constraint
+            f"Response MUST be valid JSON with 'meal_plan' key following this structure:\n"
+            f"{EXAMPLE_MEAL_STRUCTURE}"
         )
 
         log.info("Sending Meal Plan Prompt (first 300 chars):\n%s",
-                 meal_prompt[:300]+"...")
+                 meal_prompt[:300] + "...")
 
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [{"role": "user", "parts": [{"text": meal_prompt}]}],
-            # Balance between deterministic and creative
             "generationConfig": {"temperature": 0.6}
         }
 
@@ -416,17 +541,17 @@ def generate_grocery_list_with_rest(api_key: str, meal_plan_dict: dict, language
         # Construct the Prompt for Markdown list
         prompt = f"""Act as a helpful shopping assistant. Based *only* on the following list of meal dishes planned for a week, generate a likely grocery list of ingredients needed.
 
-            Dishes Planned:
-            {dishes_text}
+                Dishes Planned:
+                {dishes_text}
 
-            Instructions for Grocery List:
-            - List necessary ingredients to make these dishes in {language}.
-            - Combine similar items (e.g., list 'onion' once). Estimate reasonable weekly quantities for one person (e.g., "Onions: 2-3", "Chicken Breast: 1.5 lbs / 700g"). If unsure of quantity, just list the item.
-            - Group ingredients into logical categories using Markdown H3 headings (### Category Name). Common categories: Produce, Meat & Poultry, Fish & Seafood, Dairy & Eggs, Pantry Staples, Frozen, Spices & Oils.
-            - Exclude: salt, black pepper, water, basic vegetable/canola oil (unless a specific type like olive oil or sesame oil is clearly needed).
-            - Format the output *only* as a Markdown list with bullet points (*) under category headings.
-            - Do NOT include introductory or concluding sentences. Just the list.
-            """
+                Instructions for Grocery List:
+                - List necessary ingredients to make these dishes in {language}.
+                - Combine similar items (e.g., list 'onion' once). Estimate reasonable weekly quantities for one person (e.g., "Onions: 2-3", "Chicken Breast: 1.5 lbs / 700g"). If unsure of quantity, just list the item.
+                - Group ingredients into logical categories using Markdown H3 headings (### Category Name). Common categories: Produce, Meat & Poultry, Fish & Seafood, Dairy & Eggs, Pantry Staples, Frozen, Spices & Oils.
+                - Exclude: salt, black pepper, water, basic vegetable/canola oil (unless a specific type like olive oil or sesame oil is clearly needed).
+                - Format the output *only* as a Markdown list with bullet points (*) under category headings.
+                - Do NOT include introductory or concluding sentences. Just the list.
+                """
 
         # Make API Call (can use flash for this less complex task)
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GOOGLE_API_KEY}"
@@ -464,7 +589,7 @@ def generate_grocery_list_with_rest(api_key: str, meal_plan_dict: dict, language
 
             grocery_list_text = result_json["candidates"][0]["content"]["parts"][0]["text"]
             log.info("Successfully extracted grocery list text.")
-            
+
             if grocery_list_text:
                 log_entry = {
                     "timestamp": pd.Timestamp.now(tz='UTC').isoformat(),

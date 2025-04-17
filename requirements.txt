@@ -6,3 +6,5 @@ matplotlib
 python-dotenv
 requests
 google-genai==1.7.0
+fuzzywuzzy 
+python-Levenshtein

@@ -1,4 +1,3 @@
-# utils.py
 
 import re
 import logging
@@ -51,7 +50,7 @@ def calculate_calories(age, weight, height, gender, activity, goal):
         if not (18 <= age <= 100): raise ValueError("Age must be between 18-100")
         if weight < 30 or height < 100: raise ValueError("Invalid weight/height provided")
         if gender not in ["Male", "Female"]: raise ValueError("Invalid gender provided")
-        
+
         activity_factors = {
             "Sedentary": 1.2, "Light": 1.375, "Moderate": 1.55,
             "Active": 1.725, "Very Active": 1.9
@@ -87,6 +86,7 @@ def calculate_calories(age, weight, height, gender, activity, goal):
         log.error(f"Unexpected error during calorie calculation: {e}", exc_info=True)
         return None # Indicate general failure
 
+
 @st.cache_data
 def load_nutrition_data(filepath="data/nutrition.csv"):
     """Loads and cleans the nutrition data CSV file."""
@@ -108,3 +108,48 @@ def load_nutrition_data(filepath="data/nutrition.csv"):
         log.error(f"Failed to load or process nutrition data from {filepath}: {e}", exc_info=True)
         return None
 
+def process_day_content(day_content):
+    """Processes the content for a single day to extract meal rows and daily totals."""
+    meal_rows = []
+    daily_calories = 0
+    daily_protein = 0
+    daily_carbs = 0
+    daily_fat = 0
+
+    for meal_item_key, meal_item_content in day_content.items():
+        if isinstance(meal_item_content, dict) and "nutrition" in meal_item_content:
+            meal_type = meal_item_key.lower()
+            dish_name = meal_item_content.get("dish_name", "N/A")
+            portion_grams = estimate_grams(meal_item_content.get("portion_grams", "N/A"))
+            nutrition = meal_item_content.get("nutrition", {})
+            calories = extract_num(nutrition.get("calories", 0))
+            protein = extract_num(nutrition.get("protein", 0))
+            carbs = extract_num(nutrition.get("carbs", 0))
+            fat = extract_num(nutrition.get("fat", 0))
+
+            daily_calories += calories
+            daily_protein += protein
+            daily_carbs += carbs
+            daily_fat += fat
+
+            if meal_type == "breakfast" or meal_type == "lunch" or meal_type == "dinner":
+                meal_rows.append({
+                    "Meal": meal_type.capitalize(),
+                    "Dish": dish_name,
+                    "Portion(g)": portion_grams,
+                    "Calories (kcal)": format_number(calories),
+                    "Protein (g)": format_number(protein),
+                    "Carbs (g)": format_number(carbs),
+                    "Fat (g)": format_number(fat),
+                })
+            elif meal_type.startswith("snack"):
+                meal_rows.append({
+                    "Meal": "Snack",
+                    "Dish": dish_name,
+                    "Portion(g)": portion_grams,
+                    "Calories (kcal)": format_number(calories),
+                    "Protein (g)": format_number(protein),
+                    "Carbs (g)": format_number(carbs),
+                    "Fat (g)": format_number(fat),
+                })
+    return meal_rows, daily_calories, daily_protein, daily_carbs, daily_fat
