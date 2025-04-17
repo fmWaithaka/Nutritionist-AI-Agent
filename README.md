@@ -24,6 +24,7 @@ An intelligent meal planning application powered by Google's Gemini AI, providin
 ### Prerequisites
 - Python 3.9+
 - Google API key with Gemini access
+- USDA FoodData Central API key.
 
 ### Installation
 
@@ -58,6 +59,7 @@ pip install -r requirements.txt
 ```bash
 # Create .env file
 echo "google_api_key=your_api_key_here" > .env
+echo "usda_api_key=your_api_key_here" > .env
 
 # Create data directory
 mkdir -p data
@@ -70,13 +72,6 @@ mkdir -p data
 streamlit run app.py
 ```
 
-## 🛠️ Configuration
-
-| File/Folder         | Purpose                                    |
-|---------------------|--------------------------------------------|
-| `.env`              | Store Google API key                       |
-| `data/nutrition.csv`| Nutritional database                       |
-| `hereAreTheLogs.log`| Application logs (auto-created)            |
 
 ## 📖 User Guide
 
